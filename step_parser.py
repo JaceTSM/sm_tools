@@ -146,15 +146,44 @@ class Stepchart(object):
         self.metadata["breakdown"] = breakdown
         return stream_count, breakdown
 
+    def get_jumps_hands_quads(self, difficulty):
+        """
+        Record the number of jumps, hands, and quads per song.
 
+        Jumps = 2 steps activated at the same time
+        Hands = 3 steps activated at the same time, or a jump hold followed by a step
+        Quads = 4 steps activated at the same time
+        """
+        measures = self.charts[difficulty]["measure_list"]
+        jumps = 0
+        hands = 0
+        quads = 0
+        for measure in measures:
+            for subdivision in measure:
+                #indexing each possible step per row
+                for i in range(0,4):
+                    arrow_counter = 0
+                    if subdivision[i] > 0:
+                        arrow_counter += 1
+                        if arrow_counter == 2:
+                            jumps += 1
+                        elif arrow_counter == 3:
+                            hands +=1
+                            elif arrow_counter == 4:
+                                quads +=1
+        self.metadata["jumps"] = jumps
+        self.metadata["hands"] = hands
+        self.metadata["quads"] = quads
+        return jumps, hands, quads
 
 
 def analyze_stepchart(sm_file_name, difficulty="Challenge"):
     stepchart = Stepchart(sm_file_name)
 
     step_count, breakdown = stepchart.get_stream_breakdown("Medium")
-    print(step_count)
-    print(breakdown)
+    #print(step_count)
+    #print(breakdown)
+    print(jumps, hands, quads)
     # return stepchart.get_analysis(difficulty)
 
 
