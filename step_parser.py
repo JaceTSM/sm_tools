@@ -25,6 +25,7 @@ Goals:
 """
 
 import json
+import numpy
 import os
 import re
 import sys
@@ -35,19 +36,41 @@ import pandas as pd
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 RESOURCE_DIR = os.path.join(ROOT_DIR, "resources")
 
+# These numbers in a stepchart indicate notes that require stepping on
+# 1 = note, 2 = hold, 4 = roll
+NOTE_TYPES = ["1", "2", "4"]
+
+# .sm keys to extract directly into Stepchart.metadata
+METADATA_KEY_TRANSLATIONS = {
+    "#TITLE": "title",
+    "#ARTIST": "artist",
+}
+
 
 class StepchartException(Exception):
     pass
 
 
 class Stepchart(object):
-    def __init__(self, sm_file):
+    """
+    self.metadata = {
+        <difficulty>:
+            ...
+    }
+    """
+
+    def __init__(self, sm_file, stream_note_threshold=14, stream_size_threshold=2):
         self.sm_file = sm_file
+        self.stream_note_threshold = stream_note_threshold
+        self.stream_size_threshold = stream_size_threshold
         self.difficulties = []
         self.charts = {}
-        self.metadata = {}
+        self.raw_metadata = {}   # put the raw "#TITLE": "blahhhh" key-values in here
+        self.time_metadata = {}  # store bpm and stop info here
+        self.metadata = {}       # store desired features here!
         self.streams = []
         self._parse_sm_file()
+        self._generate_metadata()
 
     def _parse_sm_file(self):
         """Reads SM file and populates: difficulties, charts, and metadata"""
@@ -63,26 +86,50 @@ class Stepchart(object):
         for data_string in raw_content_list:
             header, _, info = data_string.strip("\n").partition(":")
             if header.strip() == "#NOTES":
-                step_mode, step_description, step_difficulty, step_rating, step_numbers, step_data = info.split(":")
+                [
+                    step_mode,
+                    step_description,
+                    step_difficulty,
+                    step_rating,
+                    step_numbers,
+                    step_data
+                ] = [i.strip() for i in info.split(":")]
                 self.difficulties.append(step_difficulty)
-                self.charts[step_difficulty.strip()] = {
-                    "mode": step_mode.strip(),
-                    "description": step_description.strip(),
-                    "difficulty": step_difficulty.strip(),
-                    "rating": step_rating.strip(),
-                    "numbers": step_numbers.strip(),
-                    "raw_data": step_data.strip()
+                self.charts[step_difficulty] = {
+                    "mode": step_mode,
+                    "description": step_description,
+                    "difficulty": step_difficulty,
+                    "rating": step_rating,
+                    "numbers": step_numbers,
+                    "raw_data": step_data
                 }
             else:
                 if header.strip():
-                    self.metadata[header.strip()] = info
+                    self.raw_metadata[header.strip()] = info
 
-    def generate_measures(self, difficulty=None):
+    def _generate_metadata(self):
+        for raw_key, translated_key in METADATA_KEY_TRANSLATIONS.items():
+            if raw_key in self.raw_metadata:
+                self.metadata[translated_key] = self.raw_metadata[raw_key]
+
+        self._generate_time_metadata()
+
+        for difficulty in self.difficulties:
+            if difficulty not in self.metadata:
+                self.metadata[difficulty] = {}
+            if difficulty not in self.raw_metadata:
+                self.raw_metadata[difficulty] = {}
+            self._generate_measures(difficulty)
+            self._generate_stream_breakdown(difficulty)
+            self._generate_stream_stats(difficulty)
+            self._get_jumps_hands_quads(difficulty)
+
+    def _generate_measures(self, difficulty=None):
         if difficulty is None:
             difficulty = self.difficulties[0]
         if difficulty not in self.charts:
             raise StepchartException(
-                f"{difficulty} not it simfile. Options: {self.difficulties}"
+                f"{difficulty} not in simfile. Options: {self.difficulties}"
             )
 
         measure_data = self.charts[difficulty]["raw_data"]
@@ -96,18 +143,18 @@ class Stepchart(object):
         return measures
 
     # TODO: make this work with NPS threshold instead note per measure threshold
-    def get_stream_breakdown(self, difficulty, threshold=14):
+    def _generate_stream_breakdown(self, difficulty):
         """
-        Stream:
-        * 14 or more subdivisions in a measure with notes
+        A measure is a "stream" if `self.stream_note_threshold` or more
+        subdivisions in that measure have notes
 
-        return N - count of measures with streams
+        set self.metadata with count of measures with streams, and return that value
         """
         if not self.charts[difficulty].get("measure_list"):
-            self.generate_measures(difficulty)
+            self._generate_measures(difficulty)
 
         measures = self.charts[difficulty]["measure_list"]
-        stream_count = 0
+        stream_total = 0
         active_measure_counter = 0
         breakdown = []
         in_stream = False
@@ -115,20 +162,17 @@ class Stepchart(object):
         for measure in measures:
             # counting subdivisions that have notes in them
             subdivision_counter = 0
-            if len(measure) >= threshold:
+            if len(measure) >= self.stream_note_threshold:
                 for subdivision in measure:
-                    # 1 = note, 2 = hold, 3 = roll
-                    if "1" in subdivision or \
-                            "2" in subdivision or \
-                            "4" in subdivision:
+                    if any([i in subdivision for i in NOTE_TYPES]):
                         subdivision_counter += 1
 
-            if subdivision_counter >= threshold:
+            if subdivision_counter >= self.stream_note_threshold:
                 if not in_stream:
                     breakdown.append(f"({active_measure_counter})")
                     active_measure_counter = 0
                 in_stream = True
-                stream_count += 1
+                stream_total += 1
                 active_measure_counter += 1
             else:
                 if in_stream:
@@ -142,19 +186,130 @@ class Stepchart(object):
         else:
             breakdown.append(f"({active_measure_counter})")
 
-        self.metadata["stream_count"] = stream_count
-        self.metadata["breakdown"] = breakdown
-        return stream_count, breakdown
+        self.metadata[difficulty]["stream_total"] = stream_total
+        self.metadata[difficulty]["breakdown"] = breakdown
+        return stream_total, breakdown
+
+    def _generate_stream_stats(self, difficulty):
+        if "breakdown" not in self.metadata[difficulty]:
+            self._generate_stream_breakdown(difficulty)
+
+        breakdown = self.metadata[difficulty]["breakdown"]
+        stream_groups = [
+            int(group)
+            for group in breakdown
+            if not group.startswith("(")
+        ]
+        break_groups = [
+            int(group.strip("(").strip(")"))
+            for group in breakdown
+            if group.startswith("(")
+        ]
+        self.metadata[difficulty]["stream_count"] = len(stream_groups)
+        self.metadata[difficulty]["stream_size_max"] = max(stream_groups)
+        self.metadata[difficulty]["stream_size_avg"] = sum(stream_groups) / len(stream_groups)
+        self.metadata[difficulty]["stream_size_std"] = numpy.std(stream_groups)
+        self.metadata[difficulty]["stream_total"] = sum(stream_groups)
+
+        self.metadata[difficulty]["break_count"] = len(break_groups)
+        self.metadata[difficulty]["break_size_max"] = max(break_groups)
+        self.metadata[difficulty]["break_size_avg"] = sum(break_groups) / len(break_groups)
+        self.metadata[difficulty]["break_size_std"] = numpy.std(break_groups)
+        self.metadata[difficulty]["break_total"] = sum(break_groups)
+
+        if len(self.charts[difficulty]["measure_list"]) != sum(stream_groups + break_groups):
+            print(f"Math bad: {len(self.charts[difficulty]['measure_list'])} != {sum(stream_groups + break_groups)} ")
+
+        self.metadata[difficulty]["measure_count"] = len(self.charts[difficulty]["measure_list"])
+
+        return self.metadata[difficulty]
+
+    def _generate_time_metadata(self):
+        if "bpms" not in self.time_metadata:
+            raw_bpms = self.raw_metadata["#BPMS"]
+            self.time_metadata["bpms"] = sorted([
+                bpm_change.split("=")
+                for bpm_change in raw_bpms.split(",")
+            ], key=lambda x: x[0])
+        if "stops" not in self.time_metadata:
+            raw_stops = self.raw_metadata["#STOPS"]
+            self.time_metadata["stops"] = sorted([
+                bpm_change.split("=")
+                for bpm_change in raw_stops.split(",")
+            ], key=lambda x: x[0])
+        if "bpm_breakdown" not in self.time_metadata:
+            time_metadata = []
+            sample_chart = self.charts[self.difficulties[0]]["measure_list"]
+            measure_count = len(sample_chart)
+            current_bpm = self.time_metadata["bpms"][0][1]  # Starting bpm
+            for measure_number in range(measure_count):
+                pass
+                # TODO: create list of measures with bpms and stops per measure,
+                #  like in comments in the method below this one
+
+    def _get_measure_bpms(self, measure_number):
+        """
+        returns a set of BPMs and measure fraction of that BPM change:
+        [
+            0:    165,      # measure starts at 165 bpm
+            0.5:  180       # halfway through the measure (beat 2), bpm changes to 180
+        ]
+        """
+        self._generate_time_metadata()
+
+        bpms = self.metadata["bpms"]
+        stops = self.metadata["stops"]
 
 
+
+
+
+    def _calculate_step_density(self, difficulty):
+        if not self.charts[difficulty].get("measure_list"):
+            self._generate_measures(difficulty)
+
+        measures = self.charts[difficulty]["measure_list"]
+
+    def _get_jumps_hands_quads(self, difficulty):
+        """
+        Record the number of jumps, hands, and quads per song.
+        Jumps = 2 steps activated at the same time
+        Hands = 3 steps activated at the same time, or a jump hold followed by a step
+        Quads = 4 steps activated at the same time
+        """
+        if not self.charts[difficulty].get("measure_list"):
+            self._generate_measures(difficulty)
+
+        measures = self.charts[difficulty]["measure_list"]
+        jumps = hands = quads = 0
+        for measure in measures:
+            for subdivision in measure:
+                arrow_counter = 0
+                #indexing each possible step per row
+                for i in range(0, 4):
+                    if subdivision[i] in NOTE_TYPES:
+                        arrow_counter += 1
+                if arrow_counter == 2:
+                    jumps += 1
+                elif arrow_counter == 3:
+                    hands += 1
+                elif arrow_counter == 4:
+                    quads += 1
+        self.metadata[difficulty]["jumps"] = jumps
+        self.metadata[difficulty]["hands"] = hands
+        self.metadata[difficulty]["quads"] = quads
+        return jumps, hands, quads
 
 
 def analyze_stepchart(sm_file_name, difficulty="Challenge"):
     stepchart = Stepchart(sm_file_name)
 
-    step_count, breakdown = stepchart.get_stream_breakdown("Medium")
-    print(step_count)
-    print(breakdown)
+    # step_count = stepchart.metadata[difficulty]["step_count"]
+    # breakdown = stepchart.metadata[difficulty]["breakdown"]
+    # print(step_count)
+    # print(breakdown)
+    print(json.dumps(stepchart.metadata, indent=2))
+
     # return stepchart.get_analysis(difficulty)
 
 
@@ -183,5 +338,5 @@ def batch_analysis(target_dir, output_file=None):
 
 
 if __name__ == "__main__":
-    analyze_stepchart("resources/Endless Flyer.sm", "Challenge")
+    analyze_stepchart("resources/Blade.sm", "Challenge")
     # print(get_sample_files())
