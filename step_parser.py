@@ -24,10 +24,12 @@ Goals:
     - stamina is likely most important -> classify as stamina or not
 """
 
+import argparse
 import json
 import os
 import pandas as pd
 import re
+import time
 
 from statistics import mean, median, mode, stdev, StatisticsError
 
@@ -506,7 +508,7 @@ def get_sample_files():
     ]
 
 
-def sample_analysis(output_file=None):
+def sample_analysis():
     """
     Do analysis on all .sm files in sample dir and all
     recursive dirs, and return a dataframe of the results.
@@ -514,18 +516,47 @@ def sample_analysis(output_file=None):
     if output_file is set, write the results to that file
     as a csv
     """
+    sample_df = batch_analysis('resources', "sample_analysis.csv")
+    print(sample_df)
+
+
+def sm_file_search(target_dir):
+    sm_files = []
+    for root, dirs, files in os.walk(target_dir):
+        for name in files:
+            file_path = os.path.join(root, name)
+            if file_path.endswith(".sm"):
+                sm_files.append(file_path)
+    return sm_files
+
+
+def batch_analysis(target_dir, output_file):
+    sm_files = sm_file_search(target_dir)
+    print(f"Found {len(sm_files)} .sm files. Running analysis...")
     dfs = []
-    for sample_file in get_sample_files():
-        dfs.append(analyze_stepchart(sample_file))
-
-    samples_df = pd.concat(dfs, ignore_index=True)
-
-    if output_file:
-        samples_df.to_csv(output_file)
-    else:
-        print(samples_df)
+    for sm_file in sm_files:
+        try:
+            dfs.append(analyze_stepchart(sm_file))
+            print(".", end="")
+        except Exception as e:
+            print("X", end="")
+            with open("errors.log", "a") as f:
+                f.write(f"ERROR: Failed to process {sm_file}")
+                f.write(str(e))
+    print("\nAnalysis complete!")
+    results_df = pd.concat(dfs, ignore_index=True)
+    results_df.to_csv(output_file)
+    return results_df
 
 
 if __name__ == "__main__":
-    sample_analysis("sample_output.csv")
-    # analyze_stepchart("resources/Fancy Footwork.sm", "Challenge")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("target_dir", required=True)
+    parser.add_argument("output_file", default=f"step_parser_output_{int(time.time())}.csv")
+    args = parser.parse_args()
+
+    batch_analysis(args.target_dir, args.output_file)
+
+    # analyze_stepchart("resources/Fancy Footwork.sm")
+    # sample_analysis()
+
