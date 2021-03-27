@@ -10,11 +10,11 @@ Goals:
     - notes per second (NPS)
     - peak NPS (for one measure)
     - bpm changes (count, range)
-    ****
     - crossover count
     - footswitch count
     - jacks count
     - side footswitch count
+    ****
     - bracket count
  * parse many stepcharts
     - store data in a csv
@@ -26,12 +26,13 @@ Goals:
 
 import json
 import os
+import pandas as pd
 import re
 
 from statistics import mean, median, mode, stdev, StatisticsError
 
 from sm_calculations import calculate_average_bpm
-from tech import detect_tech_patterns
+from step_patterns import detect_tech_patterns, detect_jumps_hands_quads
 
 
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -71,6 +72,7 @@ class Stepchart(object):
         self.in_measure_time_metadata = []      # store bpm and stop data by measure
         self.metadata = {}       # store desired features here!
         self.streams = []
+        self._metadata_generated = False
         self._parse_sm_file()
         self._generate_metadata()
 
@@ -80,8 +82,8 @@ class Stepchart(object):
             sm_contents = f.read()
 
         # Strip out comments, trailing whitespace
-        sm_contents = re.sub("//[^\n]*", "", sm_contents)
-        sm_contents = re.sub("\w$", "", sm_contents)
+        sm_contents = re.sub(r"//[^\n]*", "", sm_contents)
+        sm_contents = re.sub(r"\w$", "", sm_contents)
 
         raw_content_list = sm_contents.split(";")
 
@@ -133,6 +135,7 @@ class Stepchart(object):
             self._generate_tech_metadata(difficulty)
 
         self._generate_secondary_time_metadata()
+        self._metadata_generated = True
 
     def _generate_measures(self, difficulty=None):
         if difficulty is None:
@@ -191,6 +194,7 @@ class Stepchart(object):
                 in_stream = False
                 active_measure_counter += 1
 
+        # Account for final stream or break
         if in_stream:
             breakdown.append(f"{active_measure_counter}")
         else:
@@ -219,15 +223,17 @@ class Stepchart(object):
             self.metadata[difficulty]["stream_count"] = len(stream_groups)
             self.metadata[difficulty]["stream_size_max"] = max(stream_groups)
             self.metadata[difficulty]["stream_size_avg"] = mean(stream_groups)
-            self.metadata[difficulty]["stream_size_std"] = stdev(stream_groups)
             self.metadata[difficulty]["stream_total"] = sum(stream_groups)
+            if len(stream_groups) >= 2:
+                self.metadata[difficulty]["stream_size_std"] = stdev(stream_groups)
 
         if len(break_groups) >= 2:
             self.metadata[difficulty]["break_count"] = len(break_groups)
             self.metadata[difficulty]["break_size_max"] = max(break_groups)
             self.metadata[difficulty]["break_size_avg"] = mean(break_groups)
             self.metadata[difficulty]["break_total"] = sum(break_groups)
-            self.metadata[difficulty]["break_size_std"] = stdev(break_groups)
+            if len(break_groups) >= 2:
+                self.metadata[difficulty]["break_size_std"] = stdev(break_groups)
 
         if len(self.charts[difficulty]["measure_list"]) != sum(stream_groups + break_groups):
             print(f"Math bad: {len(self.charts[difficulty]['measure_list'])} != {sum(stream_groups + break_groups)} ")
@@ -296,7 +302,7 @@ class Stepchart(object):
                     _, last_bpm = previous_measure_bpms[-1]
                     measure_bpms = [(0.0, last_bpm)]
 
-                current_measure = sorted(measure_bpms + measure_stops, key=lambda x: x[0])
+                current_measure = sorted(measure_bpms + measure_stops, key=lambda x: x[0])  # noqa
                 in_measure_time_metadata.append(current_measure)
                 previous_measure = current_measure
 
@@ -445,26 +451,8 @@ class Stepchart(object):
             self._generate_measures(difficulty)
 
         measures = self.charts[difficulty]["measure_list"]
-        jumps = hands = quads = mines = holds = rolls = 0
-        for measure in measures:
-            for subdivision in measure:
-                arrow_counter = 0
-                #indexing each possible step per row
-                for i in range(0, 4):
-                    if subdivision[i] in NOTE_TYPES:
-                        arrow_counter += 1
-                    if subdivision[i].lower() == "m":
-                        mines += 1
-                    if subdivision[i].lower() == "2":
-                        holds += 1
-                    if subdivision[i].lower() == "4":
-                        rolls += 1
-                if arrow_counter == 2:
-                    jumps += 1
-                elif arrow_counter == 3:
-                    hands += 1
-                elif arrow_counter == 4:
-                    quads += 1
+        jumps, hands, quads, mines, holds, rolls = detect_jumps_hands_quads(measures)
+
         self.metadata[difficulty]["jumps"] = jumps
         self.metadata[difficulty]["hands"] = hands
         self.metadata[difficulty]["quads"] = quads
@@ -472,33 +460,42 @@ class Stepchart(object):
         self.metadata[difficulty]["holds"] = holds
         self.metadata[difficulty]["rolls"] = rolls
 
-        song_seconds = self._calculate_song_length()
-
-        self.metadata[difficulty]["jumps_per_second"] = jumps / song_seconds
-        self.metadata[difficulty]["hands_per_second"] = hands / song_seconds
-        self.metadata[difficulty]["quads_per_second"] = quads / song_seconds
-        self.metadata[difficulty]["mines_per_second"] = mines / song_seconds
-        self.metadata[difficulty]["holds_per_second"] = holds / song_seconds
-        self.metadata[difficulty]["rolls_per_second"] = rolls / song_seconds
-
-        return jumps, hands, quads
-
     def _generate_tech_metadata(self, difficulty):
-        crossover_count, footswitch_count = detect_tech_patterns(self.charts[difficulty]["measure_list"])
-        self.metadata[difficulty]["crossovers"] = crossover_count
-        self.metadata[difficulty]["footswitches"] = footswitch_count
+        (
+            crossovers,
+            footswitches,
+            crossover_footswitches,
+            jacks,
+            invalid_crossovers
+        ) = detect_tech_patterns(self.charts[difficulty]["measure_list"])
+        self.metadata[difficulty]["crossovers"] = crossovers
+        self.metadata[difficulty]["footswitches"] = footswitches
+        self.metadata[difficulty]["crossover_footswitches"] = crossover_footswitches
+        self.metadata[difficulty]["jacks"] = jacks
+        self.metadata[difficulty]["invalid_crossovers"] = invalid_crossovers
+
+    def metadata_df(self):
+        dfs = []
+        song_metadata = {
+            k: [v]
+            for k, v in self.metadata.items()
+            if k not in self.difficulties
+        }
+        for i, difficulty in enumerate(self.difficulties):
+            difficulty_metadata = self.metadata[difficulty].copy()
+            difficulty_metadata.update(song_metadata)
+            difficulty_metadata["breakdown"] = "-".join(difficulty_metadata["breakdown"])
+            dfs.append(pd.DataFrame(difficulty_metadata))
+
+        df = pd.concat(dfs, ignore_index=True)
+        return df
 
 
-def analyze_stepchart(sm_file_name, difficulty="Challenge"):
+def analyze_stepchart(sm_file_name):
     stepchart = Stepchart(sm_file_name)
-
-    # step_count = stepchart.metadata[difficulty]["step_count"]
-    # breakdown = stepchart.metadata[difficulty]["breakdown"]
-    # print(step_count)
-    # print(breakdown)
-    print(json.dumps(stepchart.metadata, indent=2))
-
-    # return stepchart.get_analysis(difficulty)
+    # print(json.dumps(stepchart.metadata, indent=2))
+    df = stepchart.metadata_df()
+    return df
 
 
 def get_sample_files():
@@ -509,22 +506,26 @@ def get_sample_files():
     ]
 
 
-def batch_analysis(target_dir, output_file=None):
+def sample_analysis(output_file=None):
     """
-    Do analysis on all .sm files in target dir and all
+    Do analysis on all .sm files in sample dir and all
     recursive dirs, and return a dataframe of the results.
 
     if output_file is set, write the results to that file
     as a csv
     """
-    analyses = {}
+    dfs = []
     for sample_file in get_sample_files():
-        analyses[sample_file] = analyze_stepchart(sample_file)
+        dfs.append(analyze_stepchart(sample_file))
 
-    # Make DF out of analyses
-    # write DF to csv
+    samples_df = pd.concat(dfs, ignore_index=True)
+
+    if output_file:
+        samples_df.to_csv(output_file)
+    else:
+        print(samples_df)
 
 
 if __name__ == "__main__":
-    analyze_stepchart("resources/VerTex.sm", "Challenge")
-    # print(get_sample_files())
+    sample_analysis("sample_output.csv")
+    # analyze_stepchart("resources/Fancy Footwork.sm", "Challenge")
