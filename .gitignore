@@ -4,3 +4,4 @@ bin/
 lib/
 share/
 include/
+__pycache__/
