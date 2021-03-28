@@ -107,8 +107,8 @@ class Stepchart(object):
                     step_rating,
                     step_numbers,
                     step_data
-                ] = [i.strip() for i in info.split(":")]
-                if step_mode == "dance-single":
+                ] = [i.strip() for i in info.split(":")][:6]    # some songs have stuff after the chart??
+                if step_mode == "dance-single" and step_data:
                     self.difficulties.append(step_difficulty)
                     self.charts[step_difficulty] = {
                         "mode": step_mode,
@@ -581,12 +581,22 @@ def batch_analysis(target_dir, output_file, raise_on_unknown_failure=False):
             if raise_on_unknown_failure:
                 print(f"\nERROR: failed to handle {sm_file}")
                 raise e
+
+        sm_file_counter += 1
+        if sm_file_counter % 50 == 0:
+            print("")
+        if sm_file_counter % 500 == 0:
+            print(f"{sm_file_counter} files processed")
+
     print("\nAnalysis complete!")
     if len(dfs) >= 1:
+        print("Merging dataframes")
         results_df = pd.concat(dfs, ignore_index=True)
     else:
         results_df = pd.DataFrame()
+    print(f"Writing results to {output_file}")
     results_df.to_csv(output_file)
+    print("Done writing to file")
     return results_df
 
 
@@ -598,7 +608,3 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     batch_analysis(args.target_dir, args.output_file, args.raise_on_unknown_failure)
-
-    # analyze_stepchart("resources/Fancy Footwork.sm")
-    # sample_analysis()
-
