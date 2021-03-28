@@ -25,10 +25,12 @@ Goals:
 """
 
 import argparse
+import io
 import json
 import os
 import pandas as pd
 import re
+import sys
 import time
 
 from statistics import mean, median, mode, stdev, StatisticsError
@@ -52,6 +54,10 @@ METADATA_KEY_TRANSLATIONS = {
 
 
 class StepchartException(Exception):
+    pass
+
+
+class NoSinglesChartException(StepchartException):
     pass
 
 
@@ -80,7 +86,7 @@ class Stepchart(object):
 
     def _parse_sm_file(self):
         """Reads SM file and populates: difficulties, charts, and metadata"""
-        with open(self.sm_file, "r") as f:
+        with io.open(self.sm_file, "r") as f:
             sm_contents = f.read()
 
         # Strip out comments, trailing whitespace
@@ -91,6 +97,8 @@ class Stepchart(object):
 
         for data_string in raw_content_list:
             header, _, info = data_string.strip("\n").partition(":")
+            # some charts have some junk written between a ; and the following #
+            header = "".join(header.partition("#")[1:])
             if header.strip() == "#NOTES":
                 [
                     step_mode,
@@ -112,7 +120,10 @@ class Stepchart(object):
                     }
             else:
                 if header.strip():
-                    self.raw_metadata[header.strip()] = info
+                    self.raw_metadata[header.strip().upper()] = info
+
+        if len(self.difficulties) == 0:
+            raise NoSinglesChartException(f"{self.sm_file} has no dance-single stepcharts")
 
     def _generate_metadata(self):
         for raw_key, translated_key in METADATA_KEY_TRANSLATIONS.items():
@@ -150,9 +161,14 @@ class Stepchart(object):
         measure_data = self.charts[difficulty]["raw_data"]
         raw_measures = measure_data.split(',')
         measures = [
-            measure.strip().split("\n")
+            [
+                subdivision.strip()
+                for subdivision
+                in measure.strip().split("\n")
+            ]
             for measure
             in raw_measures
+            if measure
         ]
         self.charts[difficulty]["measure_list"] = measures
         return measures
@@ -253,7 +269,7 @@ class Stepchart(object):
                 if bpm_change
             ], key=lambda x: x[0])
         if "stops" not in self.time_metadata:
-            raw_stops = self.raw_metadata["#STOPS"]
+            raw_stops = self.raw_metadata.get("#STOPS", "")
             self.time_metadata["stops"] = sorted([
                 [float(x) for x in stop.split("=")]
                 for stop in raw_stops.split(",")
@@ -434,9 +450,10 @@ class Stepchart(object):
 
         self.metadata[difficulty]["song_nps"] = song_nps
         self.metadata[difficulty]["nps_per_measure_max"] = max(nps_per_measure)
-        self.metadata[difficulty]["nps_per_measure_std"] = stdev(nps_per_measure)
         self.metadata[difficulty]["nps_per_measure_avg"] = mean(nps_per_measure)
         self.metadata[difficulty]["nps_per_measure_median"] = median(nps_per_measure)
+        if len(nps_per_measure) >= 2:
+            self.metadata[difficulty]["nps_per_measure_std"] = stdev(nps_per_measure)
         try:
             self.metadata[difficulty]["nps_per_measure_mode"] = mode(nps_per_measure)
         except StatisticsError:
@@ -530,32 +547,57 @@ def sm_file_search(target_dir):
     return sm_files
 
 
-def batch_analysis(target_dir, output_file):
+def batch_analysis(target_dir, output_file, raise_on_unknown_failure=False):
     sm_files = sm_file_search(target_dir)
-    print(f"Found {len(sm_files)} .sm files. Running analysis...")
+    print(
+        f"Found {len(sm_files)} .sm files. Running analysis. "
+        f"'.'=success, "
+        f"'X'=failure, "
+        f"'0'=no singles stepchart"
+    )
     dfs = []
+    sm_file_counter = 0
+
     for sm_file in sm_files:
         try:
             dfs.append(analyze_stepchart(sm_file))
-            print(".", end="")
-        except Exception as e:
-            print("X", end="")
+            print(".", end="", flush=True)
+        except UnicodeDecodeError:
+            print("X", end="", flush=True)
             with open("errors.log", "a") as f:
-                f.write(f"ERROR: Failed to process {sm_file}")
-                f.write(str(e))
+                f.writelines([f"ERROR: UnicodeDecodeError - {sm_file}"])
+        except NoSinglesChartException:
+            print("0", end="", flush=True)
+            with open("errors.log", "a") as f:
+                f.writelines([f"WARN: - {sm_file} contains no dance-single stepcharts"])
+        except Exception as e:
+            print("X", end="", flush=True)
+            with open("errors.log", "a") as f:
+                f.writelines([
+                    f"\nERROR: Failed to process {sm_file}\n",
+                    str(sys.exc_info()),
+                    str(e),
+                ])
+            if raise_on_unknown_failure:
+                print(f"\nERROR: failed to handle {sm_file}")
+                raise e
     print("\nAnalysis complete!")
-    results_df = pd.concat(dfs, ignore_index=True)
+    if len(dfs) >= 1:
+        results_df = pd.concat(dfs, ignore_index=True)
+    else:
+        results_df = pd.DataFrame()
     results_df.to_csv(output_file)
     return results_df
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("target_dir", required=True)
+    parser.add_argument("target_dir")
     parser.add_argument("output_file", default=f"step_parser_output_{int(time.time())}.csv")
+    parser.add_argument("--raise-on-unknown-failure", action="store_true")
     args = parser.parse_args()
 
-    batch_analysis(args.target_dir, args.output_file)
+    batch_analysis(args.target_dir, args.output_file, args.raise_on_unknown_failure)
 
     # analyze_stepchart("resources/Fancy Footwork.sm")
     # sample_analysis()
