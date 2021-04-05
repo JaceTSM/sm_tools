@@ -3,6 +3,7 @@ step_parser
 
 Goals:
  * Retrieve metrics for a stepchart
+    # Currently extracts:
     - measure counter
     - measure breakdown
     - jumps, hands, quads
@@ -10,23 +11,22 @@ Goals:
     - notes per second (NPS)
     - peak NPS (for one measure)
     - bpm changes (count, range)
+    # Naive implementation:
     - crossover count
     - footswitch count
     - jacks count
     - side footswitch count
-    ****
+    # Meed to implement
     - bracket count
+
  * parse many stepcharts
-    - store data in a csv
+    - store extracted data to a csv
     - formatted for feature set consumption
 
-* classify songs as stamina/fa/tech/footspeed?
-    - stamina is likely most important -> classify as stamina or not
 """
 
 import argparse
 import io
-import json
 import os
 import pandas as pd
 import re
@@ -35,16 +35,12 @@ import time
 
 from statistics import mean, median, mode, stdev, StatisticsError
 
-from sm_calculations import calculate_average_bpm
+from constants import NOTE_TYPES, RESOURCE_DIR, ERROR_LOG, LOG_DIR
 from step_patterns import detect_tech_patterns, detect_jumps_hands_quads
+from time_calculations import (
+    calculate_average_bpm, calculate_accumulated_measure_time, calculate_measure_nps
+)
 
-
-ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
-RESOURCE_DIR = os.path.join(ROOT_DIR, "resources")
-
-# These numbers in a stepchart indicate notes that require stepping on
-# 1 = note, 2 = hold, 4 = roll
-NOTE_TYPES = ["1", "2", "4"]
 
 # .sm keys to extract directly into Stepchart.metadata
 METADATA_KEY_TRANSLATIONS = {
@@ -126,11 +122,13 @@ class Stepchart(object):
             raise NoSinglesChartException(f"{self.sm_file} has no dance-single stepcharts")
 
     def _generate_metadata(self):
+        # Pull some of the raw #HEADER style metadata from the .sm file and add it to our feature set
         for raw_key, translated_key in METADATA_KEY_TRANSLATIONS.items():
             if raw_key in self.raw_metadata:
                 self.metadata[translated_key] = self.raw_metadata[raw_key]
 
-        self._generate_time_metadata()
+        # Extract bpm distribution, stops
+        self._extract_time_metadata()
 
         for difficulty in self.difficulties:
             if difficulty not in self.metadata:
@@ -143,7 +141,7 @@ class Stepchart(object):
             self._generate_measures(difficulty)
             self._generate_stream_breakdown(difficulty)
             self._generate_stream_stats(difficulty)
-            self._get_jumps_hands_quads(difficulty)
+            self._extract_jumps_hands_quads(difficulty)
             self._generate_step_density(difficulty)
             self._generate_tech_metadata(difficulty)
 
@@ -171,15 +169,16 @@ class Stepchart(object):
             if measure
         ]
         self.charts[difficulty]["measure_list"] = measures
-        return measures
 
     # TODO: make this work with NPS threshold instead note per measure threshold
     def _generate_stream_breakdown(self, difficulty):
         """
+        Sample Breakdown: ["(16)", "32", "(4)", "16", "(16)", "64", "(8)"]
+            * "(#)" == measures of break
+            * "#"   == measures of stream
+
         A measure is a "stream" if `self.stream_note_threshold` or more
         subdivisions in that measure have notes
-
-        set self.metadata with count of measures with streams, and return that value
         """
         if not self.charts[difficulty].get("measure_list"):
             self._generate_measures(difficulty)
@@ -220,12 +219,11 @@ class Stepchart(object):
 
         self.metadata[difficulty]["stream_total"] = stream_total
         self.metadata[difficulty]["breakdown"] = breakdown
-        return stream_total, breakdown
 
     def _generate_stream_stats(self, difficulty):
-        if "breakdown" not in self.metadata[difficulty]:
-            self._generate_stream_breakdown(difficulty)
-
+        """
+        Add stream and break distribution stats to self.metadata, for a given difficulty
+        """
         breakdown = self.metadata[difficulty]["breakdown"]
         stream_groups = [
             int(group)
@@ -258,9 +256,13 @@ class Stepchart(object):
 
         self.metadata[difficulty]["measure_count"] = len(self.charts[difficulty]["measure_list"])
 
-        return self.metadata[difficulty]
-
-    def _generate_time_metadata(self):
+    def _extract_time_metadata(self):
+        """
+        Extract the raw bpm and stop data from #BPMS and #STOPS headers,
+        formats them into lists, and saves them to self.time_metadata
+        """
+        # Extract and format bpm data. eg:
+        # [[0.0, 165.0], [100.0, 200.0], ..., [<beat_number>, <bpm>]]
         if "bpms" not in self.time_metadata:
             raw_bpms = self.raw_metadata["#BPMS"]
             self.time_metadata["bpms"] = sorted([
@@ -268,6 +270,9 @@ class Stepchart(object):
                 for bpm_change in raw_bpms.split(",")
                 if bpm_change
             ], key=lambda x: x[0])
+
+        # Extract and format stop data. eg:
+        # [[16.0, 0.1],[32, 0.4],...,[<beat_number>, <stop_len (seconds)>]]
         if "stops" not in self.time_metadata:
             raw_stops = self.raw_metadata.get("#STOPS", "")
             self.time_metadata["stops"] = sorted([
@@ -276,59 +281,81 @@ class Stepchart(object):
                 if stop
             ], key=lambda x: x[0])
 
-        if "bpm_breakdown" not in self.time_metadata:
-            sample_difficulty = self.difficulties[0]
-            sample_chart_metadata = self.charts[sample_difficulty]
-            if "measure_list" not in sample_chart_metadata:
-                self._generate_measures(sample_difficulty)
-            sample_chart = self.charts[sample_difficulty]["measure_list"]
+        self._generate_in_measure_time_metadata()
 
-            # [(measure, beat, bpm), (...]
-            bpms = [
-                (int(float(beat)) / 4, float(beat) % 4, float(bpm))
-                for beat, bpm
-                in self.time_metadata["bpms"]
+    def _generate_in_measure_time_metadata(self):
+        """
+        Generates bpm and stop metadata per measure. eg:
+
+        self.in_measure_time_metadata = [
+            [                       # measure 1
+                (0.0, 150.0),       # starts at 150 bpm
+            ],
+            [                       # measure 2
+                (0.0, 150.0),       # starts at 150 bpm
+                (1.0, "stop", 0.1), # 0.1 second long stop on beat 2 of 4 (indexed at 0)
+                (2.0, 200.0)        # bpm changes to 200 on beat 3 of 4 (indexed at 0)
+            ],
+            ...
+        ]
+        """
+        # break down bpms and stops by measure number and beat in measure
+        # [(measure, beat, bpm), (...]
+        bpms = [
+            (int(float(beat)) / 4, float(beat) % 4, float(bpm))
+            for beat, bpm
+            in self.time_metadata["bpms"]
+        ]
+        stops = [
+            (int(float(beat) / 4), float(beat) % 4, float(stop))
+            for beat, stop
+            in self.time_metadata["stops"]
+        ]
+
+        sample_difficulty = self.difficulties[0]
+        sample_chart_metadata = self.charts[sample_difficulty]
+        if "measure_list" not in sample_chart_metadata:
+            self._generate_measures(sample_difficulty)
+        sample_chart = self.charts[sample_difficulty]["measure_list"]
+
+        in_measure_time_metadata = []
+        previous_measure = None
+
+        for measure_number in range(len(sample_chart)):
+            measure_bpms = [
+                (beat, bpm)
+                for measure, beat, bpm in bpms
+                if measure == measure_number
             ]
-            stops = [
-                (int(float(beat) / 4), float(beat) % 4, float(stop))
-                for beat, stop
-                in self.time_metadata["stops"]
+            measure_stops = [
+                (beat, "stop", stop)
+                for measure, beat, stop in stops
+                if measure == measure_number
             ]
 
-            in_measure_time_metadata = []
-            previous_measure = None
+            # If no BPM change, get bpm from last measure
+            if not measure_bpms:
+                # if it's the first measure, something is wrong
+                if measure_number == 0:
+                    raise StepchartException(f"SM file has no BPM at beat 0: {self.sm_file}")
 
-            for measure_number in range(len(sample_chart)):
-                measure_bpms = [
-                    (beat, bpm)
-                    for measure, beat, bpm in bpms
-                    if measure == measure_number
-                ]
-                measure_stops = [
-                    (beat, "stop", stop)
-                    for measure, beat, stop in stops
-                    if measure == measure_number
-                ]
+                previous_measure_bpms = [i for i in previous_measure if "stop" not in i]
+                _, last_bpm = previous_measure_bpms[-1]
+                measure_bpms = [(0.0, last_bpm)]
 
-                # If no BPM change, get bpm from last measure
-                if not measure_bpms:
-                    # if it's the first measure, something is wrong
-                    if measure_number == 0:
-                        raise StepchartException(f"SM file has no BPM at beat 0: {self.sm_file}")
+            # Sort list of bpm changes and stops by beat in measure
+            current_measure = sorted(measure_bpms + measure_stops, key=lambda x: x[0])  # noqa
+            in_measure_time_metadata.append(current_measure)
+            previous_measure = current_measure
 
-                    previous_measure_bpms = [i for i in previous_measure if "stop" not in i]
-                    _, last_bpm = previous_measure_bpms[-1]
-                    measure_bpms = [(0.0, last_bpm)]
-
-                current_measure = sorted(measure_bpms + measure_stops, key=lambda x: x[0])  # noqa
-                in_measure_time_metadata.append(current_measure)
-                previous_measure = current_measure
-
-            self.in_measure_time_metadata = in_measure_time_metadata
-
-            return self.in_measure_time_metadata
+        self.in_measure_time_metadata = in_measure_time_metadata
 
     def _generate_secondary_time_metadata(self):
+        """
+        Some time metadata is easier to extract after other
+        metadata is formatted. I'm sure this could be included in
+        _generate_time_metadata if we rearrange some stuff.
+        """
         # minus one because initial bpm isn't a "change"
         self.metadata["bpm_change_count"] = len(self.time_metadata["bpms"]) - 1
         self.metadata["stop_count"] = len(self.time_metadata["stops"])
@@ -345,55 +372,34 @@ class Stepchart(object):
         self.metadata["bpm_weighted_avg"] = bpm_weighted_average
         self.metadata["bpm_mode"] = bpm_mode
 
-    def _get_measure_bpms(self, measure_number):
-        """
-        returns a set of BPMs and measure fraction of that BPM change:
-        [
-            0:    165,      # measure starts at 165 bpm
-            0.5:  180       # halfway through the measure (beat 2), bpm changes to 180
-        ]
-        """
-        if not self.in_measure_time_metadata:
-            self._generate_time_metadata()
-        return self.in_measure_time_metadata[measure_number]
-
-    @staticmethod
-    def _calculate_accumulated_measure_time(bpms, stops):
-        accumulated_seconds = 0
-        for _, _, stop in stops:
-            accumulated_seconds += stop
-
-        last_beat, last_bpm = bpms[0]
-        for beat, bpm in bpms:
-            # 60 s/min * beats / (beats/min) => sec
-            accumulated_seconds += 60 * (beat - last_beat) / last_bpm
-            last_beat, last_bpm = beat, bpm
-        # capture the last bpm in the measure. If there were no changes, it's the whole measure
-        accumulated_seconds += 60 * (4 - last_beat) / last_bpm
-
-        return accumulated_seconds
-
     def _calculate_song_length(self):
+        """
+        A song's total time elapsed is determined by checking
+        how many seconds pass in each measure, calculated via
+        in_measure_time_metadata (bpm changes and stops per measure)
+        """
         if "song_seconds" in self.metadata:
             return self.metadata["song_seconds"]
-
         if not self.in_measure_time_metadata:
-            self._generate_time_metadata()
+            self._extract_time_metadata()
+
         time_metadata = self.in_measure_time_metadata
         song_seconds = 0
 
         for measure_time_data in time_metadata:
             bpms = sorted([i for i in measure_time_data if "stop" not in i], key=lambda x: x[0])
             stops = [i for i in measure_time_data if "stop" in i]
-            song_seconds += self._calculate_accumulated_measure_time(bpms, stops)
+            song_seconds += calculate_accumulated_measure_time(bpms, stops)
 
         self.metadata["song_seconds"] = song_seconds
         return song_seconds
 
     def _calculate_step_count(self, difficulty):
+        """
+        Calculate number of steps, holds, and rolls for a single difficulty
+        """
         if "step_count" in self.metadata[difficulty]:
             return self.metadata[difficulty]["step_count"]
-
         if not self.charts[difficulty].get("measure_list"):
             self._generate_measures(difficulty)
         measure_list = self.charts[difficulty]["measure_list"]
@@ -406,32 +412,14 @@ class Stepchart(object):
         self.metadata[difficulty]["step_count"] = step_count
         return step_count
 
-    def _calculate_measure_nps(self, measure_notes, measure_time_data):
-        """
-        Assumes 4 beats per measure
-
-        :param measure_notes:       eg. [0001, 1000, 0100, 0010, ...]
-        :param measure_time_data:   eg. [(0.0, 165.0), (2.0, 200), (2.0, "stop", 0.1)]
-        :return: average notes per second for the measure
-        """
-        bpms = sorted([i for i in measure_time_data if "stop" not in i], key=lambda x: x[0])
-        stops = [i for i in measure_time_data if "stop" in i]
-
-        measure_seconds = self._calculate_accumulated_measure_time(bpms, stops)
-
-        # Tally up notes, holds, and rolls
-        note_count = 0
-        for subdivision in measure_notes:
-            for note in subdivision:
-                if note in NOTE_TYPES:
-                    note_count += 1
-
-        return float(note_count) / float(measure_seconds)
-
     def _generate_step_density(self, difficulty):
-        if not self.in_measure_time_metadata:
-            self._generate_time_metadata()
+        """
+        Add NPS (notes-per-second) distribution to self.metadata.
 
+        Note: NPS measurements for a point in time need a sliding window to
+              count, so we just use measures. This makes them
+              "notes-per-second-per-measure"
+        """
         if not self.charts[difficulty].get("measure_list"):
             self._generate_measures(difficulty)
 
@@ -445,7 +433,7 @@ class Stepchart(object):
 
         for measure_number, measure in enumerate(measure_list):
             if measure_number < len(time_metadata):
-                measure_nps = self._calculate_measure_nps(measure, time_metadata[measure_number])
+                measure_nps = calculate_measure_nps(measure, time_metadata[measure_number])
                 nps_per_measure.append(measure_nps)
 
         self.metadata[difficulty]["song_nps"] = song_nps
@@ -459,12 +447,9 @@ class Stepchart(object):
         except StatisticsError:
             self.metadata[difficulty]["nps_per_measure_mode"] = "bimodal"
 
-    def _get_jumps_hands_quads(self, difficulty):
+    def _extract_jumps_hands_quads(self, difficulty):
         """
-        Record the number of jumps, hands, and quads per song.
-        Jumps = 2 steps activated at the same time
-        Hands = 3 steps activated at the same time, or a jump hold followed by a step
-        Quads = 4 steps activated at the same time
+        Record the number of jumps, hands, quads, mines, holds, and rolls for a difficulty
         """
         if not self.charts[difficulty].get("measure_list"):
             self._generate_measures(difficulty)
@@ -480,6 +465,10 @@ class Stepchart(object):
         self.metadata[difficulty]["rolls"] = rolls
 
     def _generate_tech_metadata(self, difficulty):
+        """
+        Discover and record tech patterns (eg. crossovers, footswitches, jacks)
+        for a specific difficulty
+        """
         (
             crossovers,
             footswitches,
@@ -494,6 +483,10 @@ class Stepchart(object):
         self.metadata[difficulty]["invalid_crossovers"] = invalid_crossovers
 
     def metadata_df(self):
+        """
+        Place relevant metadata for song in a pandas DataFrame,
+        one row per difficulty.
+        """
         dfs = []
         song_metadata = {
             k: [v]
@@ -506,11 +499,15 @@ class Stepchart(object):
             difficulty_metadata["breakdown"] = "-".join(difficulty_metadata["breakdown"])
             dfs.append(pd.DataFrame(difficulty_metadata))
 
-        df = pd.concat(dfs, ignore_index=True)
+        df = pd.concat(dfs, ignore_index=True, sort=False)
         return df
 
 
 def analyze_stepchart(sm_file_name):
+    """
+    :param sm_file_name: path to .sm file
+    :return:             pd.DataFrame of song metadata
+    """
     stepchart = Stepchart(sm_file_name)
     # print(json.dumps(stepchart.metadata, indent=2))
     df = stepchart.metadata_df()
@@ -518,6 +515,7 @@ def analyze_stepchart(sm_file_name):
 
 
 def get_sample_files():
+    """List directory of test .sm files"""
     return [
         os.path.join(RESOURCE_DIR, filename)
         for filename in
@@ -533,11 +531,15 @@ def sample_analysis():
     if output_file is set, write the results to that file
     as a csv
     """
-    sample_df = batch_analysis('resources', "sample_analysis.csv")
+    sample_df = batch_analysis(RESOURCE_DIR, "sample_analysis.csv")
     print(sample_df)
 
 
 def sm_file_search(target_dir):
+    """
+    Search for all .sm files in the directory tree rooted at
+    target_dir, and return a list of all of their paths.
+    """
     sm_files = []
     for root, dirs, files in os.walk(target_dir):
         for name in files:
@@ -547,7 +549,26 @@ def sm_file_search(target_dir):
     return sm_files
 
 
+def log_error(msg):
+    """TODO: set up real logging"""
+    if not os.path.exists(LOG_DIR):
+        os.mkdir(LOG_DIR)
+    with open(ERROR_LOG, "a") as f:
+        f.writelines([f"{msg}\n"])
+
+
 def batch_analysis(target_dir, output_file, raise_on_unknown_failure=False):
+    """
+    Recursively search target_dir for .sm files and extract metadata
+    from each. Concat all of the resulting metadata dataframes into
+    one, and write it to output_file as a csv.
+
+    :param target_dir:  directory to scan
+    :param output_file: where to write resulting dataframe
+    :param raise_on_unknown_failure:
+        bool [default=false] - break analysis run on unrecognized exception (for debugging)
+    :return: resulting pd.DataFrame of concatenated metadata
+    """
     sm_files = sm_file_search(target_dir)
     print(
         f"Found {len(sm_files)} .sm files. Running analysis. "
@@ -564,22 +585,17 @@ def batch_analysis(target_dir, output_file, raise_on_unknown_failure=False):
             print(".", end="", flush=True)
         except UnicodeDecodeError:
             print("X", end="", flush=True)
-            with open("errors.log", "a") as f:
-                f.writelines([f"ERROR: UnicodeDecodeError - {sm_file}"])
+            log_error(f"ERROR: UnicodeDecodeError - {sm_file}")
         except NoSinglesChartException:
             print("0", end="", flush=True)
-            with open("errors.log", "a") as f:
-                f.writelines([f"WARN: - {sm_file} contains no dance-single stepcharts"])
+            log_error(f"WARN: - {sm_file} contains no dance-single stepcharts")
         except Exception as e:
             print("X", end="", flush=True)
-            with open("errors.log", "a") as f:
-                f.writelines([
-                    f"\nERROR: Failed to process {sm_file}\n",
-                    str(sys.exc_info()),
-                    str(e),
-                ])
+            log_error(f"ERROR: Failed to process {sm_file}")
+            log_error(str(sys.exc_info()))
+            log_error(str(e))
             if raise_on_unknown_failure:
-                print(f"\nERROR: failed to handle {sm_file}")
+                print(f"\nERROR: failed to handle {sm_file}\n")
                 raise e
 
         sm_file_counter += 1
@@ -591,7 +607,7 @@ def batch_analysis(target_dir, output_file, raise_on_unknown_failure=False):
     print("\nAnalysis complete!")
     if len(dfs) >= 1:
         print("Merging dataframes")
-        results_df = pd.concat(dfs, ignore_index=True)
+        results_df = pd.concat(dfs, ignore_index=True, sort=False)
     else:
         results_df = pd.DataFrame()
     print(f"Writing results to {output_file}")

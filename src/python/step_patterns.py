@@ -1,8 +1,20 @@
-NOTE_TYPES = {"1", "2", "4"}
+from constants import NOTE_TYPES
+
+
 ARROW_DIRECTIONS = "LDUR"
 
 
 def generate_arrow_list(measure_list):
+    """
+    For a list of measures, return a string denoting
+    consecutive directions of each step, like:
+
+        RUDURLRUJDRDUDRL...
+
+    LDUR = Left Down Up Right
+    J = Jump (direction not specified)
+    H = Hand/Quad (direction not specified)
+    """
     arrow_list = []
     current_arrow = 0
     for measure in measure_list:
@@ -25,14 +37,14 @@ def generate_arrow_list(measure_list):
 def detect_tech_patterns(measure_list, invalid_crossover_threshold=9):
     """
     This solution is does not handle:
-        * holds or rolls: the inital hold note will count as a normal note
+        * holds or rolls: the initial hold note will count as a normal note
         * intentional double-steps: they will be counted as footswitches or jacks
 
     Crossovers              - group of left or right arrows you hit
                               with the opposite foot
     Footswitches            - 2 of the same note in a row
     Jacks                   - 3+ of the same note in a row
-    Crossover footswitches  - footswicthes that happen while crossed over
+    Crossover footswitches  - footswitches that happen while crossed over
     Invalid crossovers      - Crossovers that last more than some threshold
                               number of notes
 
@@ -138,6 +150,16 @@ def detect_tech_patterns(measure_list, invalid_crossover_threshold=9):
 
 
 def detect_jumps_hands_quads(measure_list):
+    """
+    Note:
+        this does not account for holds/rolls yet, so songs like
+        Bend Your Mind will produce wildly incorrect results.
+    :param measure_list:
+        List of measures, with list of subdivisions of notes. eg:
+        [['0001', '1000', '0100', '0010'], ['0100', '0000', '1001', '0000'], ...]
+    :return:
+        (jumps, hands, quads, mines, holds, rolls)
+    """
     jumps = hands = quads = mines = holds = rolls = 0
     for measure in measure_list:
         for subdivision in measure:

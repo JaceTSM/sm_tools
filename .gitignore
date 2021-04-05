@@ -5,6 +5,7 @@ lib/
 share/
 include/
 __pycache__/
+log/
 
 *.log
 *.csv
