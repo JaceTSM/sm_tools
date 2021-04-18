@@ -6,7 +6,7 @@ There has been desire to do Data Science projects on stepmania data, like song d
 
 ### How to use
 ```shell
-python src/python/step_parser.py \
+python src/step_parser/step_parser.py \
     /path/to/your/stepmania/songs \
     /path/to/output.csv
 ```

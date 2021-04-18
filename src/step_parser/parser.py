@@ -35,7 +35,7 @@ import time
 
 from statistics import mean, median, mode, stdev, StatisticsError
 
-from constants import NOTE_TYPES, RESOURCE_DIR, ERROR_LOG, LOG_DIR
+from constants import NOTE_TYPES, ERROR_LOG, LOG_DIR
 from step_patterns import detect_tech_patterns, detect_jumps_hands_quads
 from time_calculations import (
     calculate_average_bpm, calculate_accumulated_measure_time, calculate_measure_nps
@@ -509,30 +509,8 @@ def analyze_stepchart(sm_file_name):
     :return:             pd.DataFrame of song metadata
     """
     stepchart = Stepchart(sm_file_name)
-    # print(json.dumps(stepchart.metadata, indent=2))
     df = stepchart.metadata_df()
     return df
-
-
-def get_sample_files():
-    """List directory of test .sm files"""
-    return [
-        os.path.join(RESOURCE_DIR, filename)
-        for filename in
-        os.listdir(RESOURCE_DIR)
-    ]
-
-
-def sample_analysis():
-    """
-    Do analysis on all .sm files in sample dir and all
-    recursive dirs, and return a dataframe of the results.
-
-    if output_file is set, write the results to that file
-    as a csv
-    """
-    sample_df = batch_analysis(RESOURCE_DIR, "sample_analysis.csv")
-    print(sample_df)
 
 
 def sm_file_search(target_dir):
@@ -616,7 +594,7 @@ def batch_analysis(target_dir, output_file, raise_on_unknown_failure=False):
     return results_df
 
 
-if __name__ == "__main__":
+def cli():
     parser = argparse.ArgumentParser()
     parser.add_argument("target_dir")
     parser.add_argument("output_file", default=f"step_parser_output_{int(time.time())}.csv")
@@ -624,3 +602,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     batch_analysis(args.target_dir, args.output_file, args.raise_on_unknown_failure)
+
+
+if __name__ == "__main__":
+    cli()

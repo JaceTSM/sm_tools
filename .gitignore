@@ -6,6 +6,9 @@ share/
 include/
 __pycache__/
 log/
+lib64
+
+pyvenv.cfg
 
 *.log
 *.csv
