@@ -4,7 +4,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
     long_description = fh.read()
 
 setuptools.setup(
-    name="JaceTSM",
+    name="sm_tools",
     version="0.0.1",
     author="Tim Murphy",
     author_email="jac3tssm@gmail.com",
@@ -20,7 +20,10 @@ setuptools.setup(
     package_dir={"": "src"},
     packages=setuptools.find_packages(where="src"),
     python_requires=">=3.6",
+    install_requires=[
+        'pandas',
+    ],
     entry_points={
-        'console_scripts': ['step_parser=src.step_parser.parser:cli'],
+        'console_scripts': ['step_parser=sm_tools.step_parser.parser:step_parser_cli'],
     }
 )
