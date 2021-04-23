@@ -1,4 +1,4 @@
-from constants import NOTE_TYPES
+from step_parser.constants import NOTE_TYPES
 
 
 ARROW_DIRECTIONS = "LDUR"

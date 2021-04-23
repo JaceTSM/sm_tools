@@ -25,19 +25,17 @@ Goals:
 
 """
 
-import argparse
 import io
 import os
 import pandas as pd
 import re
 import sys
-import time
 
 from statistics import mean, median, mode, stdev, StatisticsError
 
-from constants import NOTE_TYPES, ERROR_LOG, LOG_DIR
-from step_patterns import detect_tech_patterns, detect_jumps_hands_quads
-from time_calculations import (
+from step_parser.constants import NOTE_TYPES, ERROR_LOG, LOG_DIR
+from step_parser.step_patterns import detect_tech_patterns, detect_jumps_hands_quads
+from step_parser.time_calculations import (
     calculate_average_bpm, calculate_accumulated_measure_time, calculate_measure_nps
 )
 
@@ -592,17 +590,3 @@ def batch_analysis(target_dir, output_file, raise_on_unknown_failure=False):
     results_df.to_csv(output_file)
     print("Done writing to file")
     return results_df
-
-
-def step_parser_cli():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("target_dir")
-    parser.add_argument("output_file", default=f"step_parser_output_{int(time.time())}.csv")
-    parser.add_argument("--raise-on-unknown-failure", action="store_true")
-    args = parser.parse_args()
-
-    batch_analysis(args.target_dir, args.output_file, args.raise_on_unknown_failure)
-
-
-if __name__ == "__main__":
-    step_parser_cli()

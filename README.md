@@ -10,7 +10,7 @@ There has been desire to do Data Science projects on stepmania data, like song d
 git clone git@github.com:JaceTSM/sm_tools.git
 cd sm_tools
 
-python src/sm_tools/step_parser/parser.py \
+python src/step_parser/parser.py \
     /path/to/your/stepmania/songs \
     /path/to/output.csv
 ```

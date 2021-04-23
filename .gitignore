@@ -1,12 +1,14 @@
-.idea/
-venv/
-bin/
-lib/
-share/
-include/
 __pycache__/
+.idea/
+bin/
 dist/
+include/
+jbvenv/
+lib/
 log/
+share/
+venv/
+
 lib64
 
 sm_tools.egg-info/
