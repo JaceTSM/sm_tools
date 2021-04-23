@@ -1,4 +1,4 @@
-from .constants import NOTE_TYPES
+from step_parser.constants import NOTE_TYPES
 
 
 def calculate_average_bpm(bpm_map, song_length_beats):
