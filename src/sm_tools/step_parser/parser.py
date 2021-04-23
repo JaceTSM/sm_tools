@@ -35,9 +35,9 @@ import time
 
 from statistics import mean, median, mode, stdev, StatisticsError
 
-from .constants import NOTE_TYPES, ERROR_LOG, LOG_DIR
-from .step_patterns import detect_tech_patterns, detect_jumps_hands_quads
-from .time_calculations import (
+from constants import NOTE_TYPES, ERROR_LOG, LOG_DIR
+from step_patterns import detect_tech_patterns, detect_jumps_hands_quads
+from time_calculations import (
     calculate_average_bpm, calculate_accumulated_measure_time, calculate_measure_nps
 )
 
@@ -605,4 +605,4 @@ def step_parser_cli():
 
 
 if __name__ == "__main__":
-    cli()
+    step_parser_cli()
