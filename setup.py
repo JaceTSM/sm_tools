@@ -24,6 +24,6 @@ setuptools.setup(
         'pandas',
     ],
     entry_points={
-        'console_scripts': ['step_parser=step_parser.parser:step_parser_cli'],
+        'console_scripts': ['step_parser=step_parser.cli:step_parser_cli'],
     }
 )

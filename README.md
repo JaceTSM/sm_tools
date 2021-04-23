@@ -10,7 +10,7 @@ There has been desire to do Data Science projects on stepmania data, like song d
 git clone git@github.com:JaceTSM/sm_tools.git
 cd sm_tools
 
-python src/step_parser/parser.py \
+python src/step_parser/cli.py \
     /path/to/your/stepmania/songs \
     /path/to/output.csv
 ```
@@ -23,9 +23,17 @@ step_parser /path/to/your/stepmania/songs /path/to/output.csv
 ```
 In python:
 ```python
-from sm_tools import analyze_stepchart, batch_analysis
+import os
+from step_parser import analyze_stepchart, batch_analysis
 
-analyze_stepchart("<sm_file_path>")
+# Get DF for all songs in a dir (recursive search)
+sm_song_dir = "/mnt/c/Games/StepMania 5/Songs"
+batch_analysis(sm_song_dir)
 
-batch_analysis("<path_to_sm_song_dir") 
+# Get DF for single .sm file
+sample_stepchart = os.path.join(
+    sm_song_dir,
+    "Jimmy Jawns/Dreadnought - [Aoreo]/Dreadnought.sm"
+)
+analyze_stepchart(sample_stepchart)
 ```

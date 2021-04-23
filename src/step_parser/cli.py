@@ -1,7 +1,12 @@
 import argparse
+import os
+import sys
 import time
 
-from stepchart import batch_analysis
+pkg_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(pkg_dir)
+
+from step_parser.stepchart import batch_analysis
 
 
 def step_parser_cli():
