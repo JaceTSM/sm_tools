@@ -37,3 +37,13 @@ sample_stepchart = os.path.join(
 )
 analyze_stepchart(sample_stepchart)
 ```
+
+### Manual Package Installation
+Create python virtualenv however you want, then:
+```python
+# from project root, build the package
+python -m build
+
+# then install the wheel directly (the version number may be different)
+pip install dist/sm_tools-0.0.1-py3-none-any.whl
+```
