@@ -5,7 +5,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setuptools.setup(
     name="sm_tools",
-    version="0.0.1",
+    version="0.0.2",
     author="Tim Murphy",
     author_email="jac3tssm@gmail.com",
     description="StepMania tools",
