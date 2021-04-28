@@ -33,7 +33,7 @@ import sys
 
 from statistics import mean, median, mode, stdev, StatisticsError
 
-from step_parser.constants import NOTE_TYPES, ERROR_LOG, LOG_DIR
+from step_parser.constants import NOTE_TYPES, ERROR_LOG
 from step_parser.step_patterns import detect_tech_patterns, detect_jumps_hands_quads
 from step_parser.time_calculations import (
     calculate_average_bpm, calculate_accumulated_measure_time, calculate_measure_nps
@@ -527,13 +527,12 @@ def sm_file_search(target_dir):
 
 def log_error(msg):
     """TODO: set up real logging"""
-    if not os.path.exists(LOG_DIR):
-        os.mkdir(LOG_DIR)
     with open(ERROR_LOG, "a") as f:
         f.writelines([f"{msg}\n"])
 
 
-def batch_analysis(target_dir, output_file, raise_on_unknown_failure=False):
+# TODO: make the csv drop optional
+def batch_analysis(target_dir, output_file=None, raise_on_unknown_failure=False):
     """
     Recursively search target_dir for .sm files and extract metadata
     from each. Concat all of the resulting metadata dataframes into
@@ -586,7 +585,9 @@ def batch_analysis(target_dir, output_file, raise_on_unknown_failure=False):
         results_df = pd.concat(dfs, ignore_index=True, sort=False)
     else:
         results_df = pd.DataFrame()
-    print(f"Writing results to {output_file}")
-    results_df.to_csv(output_file)
-    print("Done writing to file")
+
+    if output_file:
+        print(f"Writing results to {output_file}")
+        results_df.to_csv(output_file)
+        print("Done writing to file")
     return results_df
