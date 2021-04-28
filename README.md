@@ -16,11 +16,11 @@ python src/step_parser/cli.py \
 ```
 If you don't pass `--output`, it will default to writing the output to `step_parser_output_${unix_ts}.csv`.
 
-### As package (coming soon):
+### As package:
 ```shell
 pip install sm_tools
 
-step_parser /path/to/your/stepmania/songs /path/to/output.csv
+step_parser /path/to/your/stepmania/songs --output /path/to/output.csv
 ```
 In python:
 ```python
